@@ -844,6 +844,10 @@ int CXBMCRenderManager::AddVideoPicture(DVDVideoPicture& pic)
   else if(pic.format == RENDER_FMT_VAAPI)
     m_pRenderer->AddProcessor(*pic.vaapi);
 #endif
+#if defined(HAVE_MFCDECODER)
+  else if(pic.format == RENDER_FMT_MFC)
+    m_pRenderer->AddProcessor(&pic);
+#endif
   m_pRenderer->ReleaseImage(index, false);
 
   return index;

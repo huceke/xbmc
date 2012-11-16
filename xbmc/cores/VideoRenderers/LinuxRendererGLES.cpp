@@ -60,6 +60,15 @@
 #include "osx/DarwinUtils.h"
 #endif
 
+#if defined(HAVE_MFCDECODER)
+#include <sys/ioctl.h>
+#endif
+
+#ifdef CLASSNAME
+#undef CLASSNAME
+#endif
+#define CLASSNAME "CLinuxRendererGLES"
+
 using namespace Shaders;
 
 CLinuxRendererGLES::YUVBUFFER::YUVBUFFER()
@@ -112,6 +121,14 @@ CLinuxRendererGLES::CLinuxRendererGLES()
 
   m_dllSwScale = new DllSwScale;
   m_sw_context = NULL;
+#if defined(HAVE_MFCDECODER)
+  m_iVideoHandle = -1;
+  m_iConverterHandle = -1;
+  m_v4l2ConvertBuffer = NULL;
+  m_bMFCStartConverter = true;
+  m_bMFCStartRender = true;
+  m_iMFCBufferIndex = 0;
+#endif
 }
 
 CLinuxRendererGLES::~CLinuxRendererGLES()
@@ -222,6 +239,12 @@ int CLinuxRendererGLES::GetImage(YV12Image *image, int source, bool readonly)
   }
 #ifdef HAVE_VIDEOTOOLBOXDECODER
   if (m_renderMethod & RENDER_CVREF )
+  {
+    return source;
+  }
+#endif
+#if defined(HAVE_MFCDECODER)
+  if (m_renderMethod & RENDER_MFC )
   {
     return source;
   }
@@ -432,7 +455,7 @@ void CLinuxRendererGLES::RenderUpdate(bool clear, DWORD flags, DWORD alpha)
   int index = m_iYV12RenderBuffer;
   YUVBUFFER& buf =  m_buffers[index];
 
-  if (m_format != RENDER_FMT_OMXEGL)
+  if (m_format != RENDER_FMT_OMXEGL && m_format != RENDER_FMT_MFC)
   {
     if (!buf.fields[FIELD_FULL][0].id) return;
   }
@@ -522,6 +545,9 @@ unsigned int CLinuxRendererGLES::PreInit()
 #endif
 #ifdef HAVE_VIDEOTOOLBOXDECODER
   m_formats.push_back(RENDER_FMT_CVBREF);
+#endif
+#if defined(HAVE_MFCDECODER)
+  m_formats.push_back(RENDER_FMT_MFC);
 #endif
 
   // setup the background colour
@@ -628,6 +654,12 @@ void CLinuxRendererGLES::LoadShaders(int field)
         m_renderMethod = RENDER_BYPASS;
         break;
       }
+      else if (m_format == RENDER_FMT_MFC)
+      {
+        CLog::Log(LOGNOTICE, "GL: Using MFC render method");
+        m_renderMethod = RENDER_MFC;
+        break;
+      }
       else if (m_format == RENDER_FMT_CVBREF)
       {
         CLog::Log(LOGNOTICE, "GL: Using CoreVideoRef RGBA render method");
@@ -695,6 +727,12 @@ void CLinuxRendererGLES::LoadShaders(int field)
     m_textureUpload = &CLinuxRendererGLES::UploadBYPASSTexture;
     m_textureCreate = &CLinuxRendererGLES::CreateBYPASSTexture;
     m_textureDelete = &CLinuxRendererGLES::DeleteBYPASSTexture;
+  }
+  else if (m_format == RENDER_FMT_MFC)
+  {
+    m_textureUpload = &CLinuxRendererGLES::UploadMFCTexture;
+    m_textureCreate = &CLinuxRendererGLES::CreateMFCTexture;
+    m_textureDelete = &CLinuxRendererGLES::DeleteMFCTexture;
   }
   else
   {
@@ -803,6 +841,11 @@ void CLinuxRendererGLES::Render(DWORD flags, int index)
   else if (m_renderMethod & RENDER_OMXEGL)
   {
     RenderOpenMax(index, m_currentField);
+    VerifyGLState();
+  }
+  else if (m_renderMethod & RENDER_MFC)
+  {
+    RenderMFC(index, m_currentField);
     VerifyGLState();
   }
   else if (m_renderMethod & RENDER_CVREF)
@@ -1241,6 +1284,80 @@ void CLinuxRendererGLES::RenderOpenMax(int index, int field)
 #endif
 }
 
+void CLinuxRendererGLES::RenderMFC(int index, int field)
+{
+#if defined(HAVE_MFCDECODER)
+  //printf("CLinuxRendererGLES::RenderMFC\n");
+#endif
+#if 0
+  YUVPLANES &planes = m_buffers[index].fields[field];
+
+  glDisable(GL_DEPTH_TEST);
+
+  glEnable(m_textureTarget);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(m_textureTarget, planes[0].id);
+
+  g_Windowing.EnableGUIShader(SM_TEXTURE_RGBA);
+
+  GLubyte idx[4] = {0, 1, 3, 2};        //determines order of triangle strip
+  GLfloat ver[4][4];
+  GLfloat tex[4][2];
+  float col[4][3];
+
+  for (int index = 0;index < 4;++index)
+  {
+    col[index][0] = col[index][1] = col[index][2] = 1.0;
+  }
+
+  GLint   posLoc = g_Windowing.GUIShaderGetPos();
+  GLint   texLoc = g_Windowing.GUIShaderGetCoord0();
+  GLint   colLoc = g_Windowing.GUIShaderGetCol();
+
+  glVertexAttribPointer(posLoc, 4, GL_FLOAT, 0, 0, ver);
+  glVertexAttribPointer(texLoc, 2, GL_FLOAT, 0, 0, tex);
+  glVertexAttribPointer(colLoc, 3, GL_FLOAT, 0, 0, col);
+
+  glEnableVertexAttribArray(posLoc);
+  glEnableVertexAttribArray(texLoc);
+  glEnableVertexAttribArray(colLoc);
+
+  // Set vertex coordinates
+  for(int i = 0; i < 4; i++)
+  {
+    ver[i][0] = m_rotatedDestCoords[i].x;
+    ver[i][1] = m_rotatedDestCoords[i].y;
+    ver[i][2] = 0.0f;// set z to 0
+    ver[i][3] = 1.0f;
+  }
+
+  // Set texture coordinates
+  /*
+  tex[0][0] = tex[3][0] = planes[0].rect.x1;
+  tex[0][1] = tex[1][1] = planes[0].rect.y1;
+  tex[1][0] = tex[2][0] = planes[0].rect.x2;
+  tex[2][1] = tex[3][1] = planes[0].rect.y2;
+  */
+  tex[0][0] = tex[3][0] = 0;
+  tex[0][1] = tex[1][1] = 0;
+  tex[1][0] = tex[2][0] = 1;
+  tex[2][1] = tex[3][1] = 1;
+
+  glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_BYTE, idx);
+
+  glDisableVertexAttribArray(posLoc);
+  glDisableVertexAttribArray(texLoc);
+  glDisableVertexAttribArray(colLoc);
+
+  g_Windowing.DisableGUIShader();
+
+  VerifyGLState();
+
+  glDisable(m_textureTarget);
+  VerifyGLState();
+#endif
+}
+
 void CLinuxRendererGLES::RenderCoreVideoRef(int index, int field)
 {
 #ifdef HAVE_VIDEOTOOLBOXDECODER
@@ -1647,6 +1764,501 @@ bool CLinuxRendererGLES::CreateYV12Texture(int index)
 }
 
 //********************************************************************************************************
+// RGBA Texture creation, deletion, copying + clearing
+//********************************************************************************************************
+void CLinuxRendererGLES::UploadMFCTexture(int index)
+{
+#if defined(HAVE_MFCDECODER)
+  //printf("CLinuxRendererGLES::UploadMFCTexture\n");
+
+  if(m_iConverterHandle >= 0 && m_iVideoHandle >= 0)
+  {
+    int ret = 0;
+
+    V4L2Buffer *buffer = m_buffers[index].mfcBuffer;
+
+    if(!buffer)
+    {
+      CLog::Log(LOGERROR, "%s::%s - no buffer\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    // convert
+    ret = CLinuxV4l2::QueueBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+        V4L2_MEMORY_USERPTR, buffer->iNumPlanes, 0, buffer);
+    if (ret < 0)
+    {
+      CLog::Log(LOGERROR, "%s::%s - queue converter input buffer\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    V4L2Buffer *convert_buffer = &m_v4l2ConvertBuffer[m_iMFCBufferIndex];
+    if(!convert_buffer)
+    {
+      CLog::Log(LOGERROR, "%s::%s - convert buffer index\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    ret = CLinuxV4l2::QueueBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 
+        V4L2_MEMORY_USERPTR, convert_buffer->iNumPlanes, 0, convert_buffer);
+    if (ret < 0)
+    {
+      CLog::Log(LOGERROR, "%s::%s - queue converter output buffer\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    if(m_bMFCStartConverter)
+    {
+      CLinuxV4l2::StreamOn(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, VIDIOC_STREAMON);
+      CLinuxV4l2::StreamOn(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, VIDIOC_STREAMON);
+      m_bMFCStartConverter = false;
+    }
+
+    CLinuxV4l2::PollOutput(m_iConverterHandle, 2000);
+
+    ret = CLinuxV4l2::DequeueBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+        V4L2_MEMORY_USERPTR, V4L2_NUM_MAX_PLANES);
+    if (ret < 0) 
+    {
+      CLog::Log(LOGERROR, "%s::%s -  dequeue converter output buffer\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    CLinuxV4l2::PollInput(m_iConverterHandle, 2000);
+
+    ret = CLinuxV4l2::DequeueBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 
+        V4L2_MEMORY_USERPTR, convert_buffer->iNumPlanes);
+    if(ret < 0) 
+    {
+      CLog::Log(LOGERROR, "%s::%s -  dequeue converter output buffer\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    // render
+    ret = CLinuxV4l2::QueueBuffer(m_iVideoHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+        V4L2_MEMORY_MMAP, convert_buffer->iNumPlanes, m_iMFCBufferIndex, convert_buffer);
+    if (ret < 0) 
+    {
+      CLog::Log(LOGERROR, "%s::%s -  queue video layer output buffer\n", CLASSNAME, __func__);
+      goto do_exit_upload;
+    }
+
+    if(m_bMFCStartRender)
+    {
+      m_iMFCBufferIndex++;
+      CLinuxV4l2::StreamOn(m_iVideoHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, VIDIOC_STREAMON);
+      m_bMFCStartRender = false;
+    }
+    else
+    {
+      CLinuxV4l2::PollOutput(m_iVideoHandle, 2000);
+      m_iMFCBufferIndex = CLinuxV4l2::DequeueBuffer(m_iVideoHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+          V4L2_MEMORY_MMAP, convert_buffer->iNumPlanes);
+
+      if(m_iMFCBufferIndex < 0) 
+      {
+        CLog::Log(LOGERROR, "%s::%s -  dequeue video layer output buffer\n", CLASSNAME, __func__);
+        goto do_exit_upload;
+      }
+    }
+  }
+
+do_exit_upload:
+  m_eventTexturesDone[index]->Set();
+#endif
+
+#if 0
+  YUVBUFFER& buf    = m_buffers[source];
+  YV12Image* im     = &buf.image;
+  YUVFIELDS& fields =  buf.fields;
+  YUVPLANE &plane = m_buffers[source].fields[0][0];
+
+  if (!(im->flags&IMAGE_FLAG_READY))
+  {
+    m_eventTexturesDone[source]->Set();
+    return;
+  }
+
+  glEnable(m_textureTarget);
+  VerifyGLState();
+
+  glBindTexture(m_textureTarget, plane.id);
+  // Set row pixels
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+  glTexSubImage2D(m_textureTarget, 0, 0, 0, im->width, im->height, GL_RGBA, GL_UNSIGNED_BYTE, im->plane[0]);
+
+  glBindTexture(m_textureTarget, 0);
+
+  glDisable(m_textureTarget);
+  VerifyGLState();
+
+  // TODO : im->stride[0] should be right
+  /*
+  LoadPlane( fields[FIELD_FULL][0], GL_RGBA, buf.flipindex
+           , im->width, im->height
+           , im->stride[0], im->plane[0] );
+
+  VerifyGLState();
+  */
+
+  m_eventTexturesDone[source]->Set();
+
+  CalculateTextureSourceRects(source, 1);
+
+  /*
+  plane.flipindex = m_buffers[source].flipindex;
+
+  m_eventTexturesDone[source]->Set();
+  */
+
+  //glDisable(m_textureTarget);
+#endif
+}
+
+void CLinuxRendererGLES::DeleteMFCTexture(int index)
+{
+#if defined(HAVE_MFCDECODER)
+  printf("CLinuxRendererGLES::DeleteMFCTexture 1\n");
+
+  if(m_iConverterHandle >= 0)
+  {
+    /*
+    if(m_v4l2ConvertBuffer)
+    {
+      for(int i = 0; i < NUM_OUTPUT_BUFFERS; i++)
+      {
+        V4L2Buffer *convert_buffer = &m_v4l2ConvertBuffer[i];
+
+        if(convert_buffer)
+        {
+          CLinuxV4l2::QueueBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 
+            V4L2_MEMORY_MMAP, convert_buffer->iNumPlanes, i, convert_buffer);
+        }
+      }
+    }
+    */
+
+    CLinuxV4l2::StreamOn(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, VIDIOC_STREAMOFF);
+    CLinuxV4l2::StreamOn(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, VIDIOC_STREAMOFF);
+
+  }
+  if(m_iVideoHandle >= 0)
+  {
+    /*
+    if(m_v4l2ConvertBuffer)
+    {
+      for(int i = 0; i < NUM_OUTPUT_BUFFERS; i++)
+      {
+        V4L2Buffer *convert_buffer = &m_v4l2ConvertBuffer[i];
+
+        if(convert_buffer)
+        {
+          CLinuxV4l2::QueueBuffer(m_iVideoHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+            V4L2_MEMORY_MMAP, convert_buffer->iNumPlanes, i, convert_buffer);
+        }
+      }
+    }
+    */
+
+    CLinuxV4l2::StreamOn(m_iVideoHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, VIDIOC_STREAMOFF);
+  }
+
+  if(m_v4l2ConvertBuffer)
+  {
+    m_v4l2ConvertBuffer = CLinuxV4l2::FreeBuffers(NUM_OUTPUT_BUFFERS, m_v4l2ConvertBuffer);
+    printf("CLinuxRendererGLES::DeleteMFCTexture 2\n");
+  }
+
+  if(m_iConverterHandle >= 0)
+  {
+    close(m_iConverterHandle);
+    m_iConverterHandle = -1;
+  }
+  if(m_iVideoHandle >= 0)
+  {
+    close(m_iVideoHandle);
+    m_iVideoHandle = -1;
+  }
+
+  m_bMFCStartConverter = true;
+  m_bMFCStartRender = true;
+  m_iMFCBufferIndex = 0;
+#endif
+#if 0
+  YV12Image &im     = m_buffers[index].image;
+  YUVFIELDS &fields = m_buffers[index].fields;
+
+  if( fields[FIELD_FULL][0].id == 0 ) return;
+
+  /* finish up all textures, and delete them */
+  g_graphicsContext.BeginPaint();  //FIXME
+  for(int f = 0;f<MAX_FIELDS;f++)
+  {
+    for(int p = 0;p<MAX_PLANES;p++)
+    {
+      if( fields[f][p].id )
+      {
+        if (glIsTexture(fields[f][p].id))
+          glDeleteTextures(1, &fields[f][p].id);
+        fields[f][p].id = 0;
+      }
+    }
+  }
+  g_graphicsContext.EndPaint();
+
+  for(int p = 0;p<MAX_PLANES;p++)
+  {
+    if (im.plane[p])
+    {
+      delete[] im.plane[p];
+      im.plane[p] = NULL;
+    }
+  }
+#endif
+}
+
+bool CLinuxRendererGLES::CreateMFCTexture(int index)
+{
+#if defined(HAVE_MFCDECODER)
+  printf("CLinuxRendererGLES::CreateMFCTexture\n");
+
+  struct v4l2_capability cap;
+  struct v4l2_format fmt;
+  int ret = 0;
+  int buffers = 0;
+  struct v4l2_crop crop;
+
+  //printf("m_sourceWidth %d m_sourceHeight %d\n", m_sourceWidth, m_sourceHeight);
+
+  if(m_v4l2ConvertBuffer)
+    return true;
+
+  if(m_iConverterHandle == -1)
+  {
+    m_iConverterHandle = open("/dev/video4", O_RDWR, 0);
+    if(m_iConverterHandle < 0)
+    {
+      CLog::Log(LOGERROR, "%s::%s - open converter device /dev/video4", CLASSNAME, __func__);
+      return false;
+    }
+
+    ret = ioctl(m_iConverterHandle, VIDIOC_QUERYCAP, &cap);
+    if (ret != 0)
+    {
+      CLog::Log(LOGERROR, "%s::%s - query converter m2m caps", CLASSNAME, __func__);
+      return false;
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) ||
+      !(cap.capabilities & V4L2_CAP_VIDEO_OUTPUT_MPLANE) ||
+      !(cap.capabilities & V4L2_CAP_STREAMING))
+    {
+      CLog::Log(LOGERROR, "%s::%s - insufficient converter m2m caps\n", CLASSNAME, __func__);
+      return false;
+    }
+  }
+
+  if(m_iVideoHandle == -1)
+  {
+    m_iVideoHandle = open("/dev/video12", O_RDWR, 0);
+    if(m_iVideoHandle < 0)
+    {
+      CLog::Log(LOGERROR, "%s::%s - open video layer device /dev/video12", CLASSNAME, __func__);
+      return false;
+    }
+
+    ret = ioctl(m_iVideoHandle, VIDIOC_QUERYCAP, &cap);
+    if (ret != 0)
+    {
+      CLog::Log(LOGERROR, "%s::%s - query video layer caps", CLASSNAME, __func__);
+      return false;
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_OUTPUT_MPLANE) ||
+      !(cap.capabilities & V4L2_CAP_STREAMING))
+    {
+      CLog::Log(LOGERROR, "%s::%s - insufficient video layer caps\n", CLASSNAME, __func__);
+      return false;
+    }
+  }
+
+  RESOLUTION_INFO& res_info =  g_settings.m_ResInfo[g_graphicsContext.GetVideoResolution()];
+
+  memset(&fmt, 0, sizeof(struct v4l2_format));
+  fmt.type                    = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+  fmt.fmt.pix_mp.field        = V4L2_FIELD_ANY;
+  fmt.fmt.pix_mp.pixelformat  = V4L2_PIX_FMT_NV12MT;
+  fmt.fmt.pix_mp.width        = m_sourceWidth;
+  fmt.fmt.pix_mp.height       = m_sourceHeight;
+  fmt.fmt.pix_mp.num_planes   = 2;
+  /*
+  fmt.fmt.pix_mp.plane_fmt[0].bytesperline  = align(m_sourceWidth, 16);
+  fmt.fmt.pix_mp.plane_fmt[0].sizeimage     = align(m_sourceWidth * m_sourceHeight, 2048);
+  fmt.fmt.pix_mp.plane_fmt[1].bytesperline  = align(m_sourceWidth, 16);
+  fmt.fmt.pix_mp.plane_fmt[1].sizeimage     = align(m_sourceWidth * align(m_sourceHeight >> 1, 8), 2048);
+  */
+  fmt.fmt.pix_mp.plane_fmt[0].bytesperline  = m_sourceWidth;
+  fmt.fmt.pix_mp.plane_fmt[0].sizeimage     = m_sourceWidth * m_sourceHeight;
+  fmt.fmt.pix_mp.plane_fmt[1].bytesperline  = m_sourceWidth;
+  fmt.fmt.pix_mp.plane_fmt[1].sizeimage     = m_sourceWidth * (m_sourceHeight >> 1);
+
+  if (ioctl(m_iConverterHandle, VIDIOC_S_FMT, &fmt) == -1)
+  {
+    CLog::Log(LOGERROR, "%s::%s - setting converter input format\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  // round to an even multiple of 16
+  res_info.iScreenHeight  = ((res_info.iScreenHeight/16) + (res_info.iScreenHeight/16)%2) * 16;
+
+  fmt.fmt.pix_mp.width    = res_info.iScreenWidth;
+  fmt.fmt.pix_mp.height   = res_info.iScreenHeight;
+
+  fmt.fmt.pix_mp.plane_fmt[0].bytesperline  = res_info.iScreenWidth;
+  fmt.fmt.pix_mp.plane_fmt[0].sizeimage     = res_info.iScreenWidth * res_info.iScreenHeight;
+  fmt.fmt.pix_mp.plane_fmt[1].bytesperline  = res_info.iScreenWidth;
+  fmt.fmt.pix_mp.plane_fmt[1].sizeimage     = res_info.iScreenWidth * (res_info.iScreenHeight >> 1);
+
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+
+  if (ioctl(m_iConverterHandle, VIDIOC_S_FMT, &fmt) == -1) 
+  {
+    CLog::Log(LOGERROR, "%s::%s - setting converter output format\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+
+  if (ioctl(m_iVideoHandle, VIDIOC_S_FMT, &fmt) == -1) 
+  {
+    CLog::Log(LOGERROR, "%s::%s - setting video layer input format\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  memset(&crop, 0, sizeof(struct v4l2_crop));
+  crop.type     = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+  crop.c.left   = 0;
+  crop.c.top    = 0;
+  crop.c.width  = m_sourceWidth;
+  crop.c.height = m_sourceHeight;
+
+  if (ioctl(m_iConverterHandle, VIDIOC_S_CROP, &crop) == -1) 
+  {
+    CLog::Log(LOGERROR, "%s::%s - setting converter input crop\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  crop.c.width  = res_info.iScreenWidth;
+  crop.c.height = res_info.iScreenHeight;
+
+  crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+
+  if (ioctl(m_iConverterHandle, VIDIOC_S_CROP, &crop) == -1) 
+  {
+    CLog::Log(LOGERROR, "%s::%s - setting converter output crop\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  crop.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+
+  if (ioctl(m_iVideoHandle, VIDIOC_S_CROP, &crop) == -1) 
+  {
+    CLog::Log(LOGERROR, "%s::%s - setting video input crop\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  buffers = CLinuxV4l2::RequestBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+      V4L2_MEMORY_USERPTR, NUM_CONVERT_BUFFERS);
+  if(buffers != NUM_CONVERT_BUFFERS)
+  {
+    CLog::Log(LOGERROR, "%s::%s - allocate converter input buffers\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  buffers = CLinuxV4l2::RequestBuffer(m_iConverterHandle, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, 
+      V4L2_MEMORY_USERPTR, NUM_CONVERT_BUFFERS);
+  if(buffers != NUM_CONVERT_BUFFERS)
+  {
+    CLog::Log(LOGERROR, "%s::%s - allocate converter output buffers\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  buffers = CLinuxV4l2::RequestBuffer(m_iVideoHandle, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, 
+      V4L2_MEMORY_MMAP, NUM_OUTPUT_BUFFERS);
+  if(buffers != NUM_OUTPUT_BUFFERS)
+  {
+    CLog::Log(LOGERROR, "%s::%s - allocate video layer input buffers\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  // Allocate buffers
+  m_v4l2ConvertBuffer = (V4L2Buffer *)calloc(NUM_OUTPUT_BUFFERS, sizeof(V4L2Buffer));
+  if(!m_v4l2ConvertBuffer)
+  {
+    CLog::Log(LOGERROR, "%s::%s - cannot allocate buffers\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  // map converter output buffer
+  if(!CLinuxV4l2::MmapBuffers(m_iVideoHandle, NUM_OUTPUT_BUFFERS, m_v4l2ConvertBuffer, 
+        V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, V4L2_MEMORY_MMAP, false))
+  {
+    CLog::Log(LOGERROR, "%s::%s - cannot mmap input buffers\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  m_eventTexturesDone[index]->Set();
+#endif
+  return true;
+#if 0
+  /* since we also want the field textures, pitch must be texture aligned */
+  YV12Image &im     = m_buffers[index].image;
+  YUVFIELDS &fields = m_buffers[index].fields;
+
+  DeleteYV12Texture(index);
+
+  im.height = m_sourceHeight;
+  im.width  = m_sourceWidth;
+
+  im.stride[0] = im.width * 4;
+  im.planesize[0] = im.stride[0] * im.height;
+
+  im.plane[0] = new BYTE[im.planesize[0]];
+
+  glEnable(m_textureTarget);
+  if (!glIsTexture(fields[0][0].id))
+  {
+    glGenTextures(1, &fields[0][0].id);
+    VerifyGLState();
+  }
+
+  YUVPLANES &planes = fields[0];
+
+  planes[0].texwidth  = im.width;
+  planes[0].texheight = im.height;
+
+  YUVPLANE &plane = planes[0];
+
+  glBindTexture(m_textureTarget, plane.id);
+  CLog::Log(LOGDEBUG,  "GL: Creating MFC texture of size %d x %d", plane.texwidth, plane.texheight);
+
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glTexImage2D(m_textureTarget, 0, GL_RGBA, plane.texwidth, plane.texheight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+  glTexParameteri(m_textureTarget, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(m_textureTarget, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(m_textureTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(m_textureTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  VerifyGLState();
+
+  glDisable(m_textureTarget);
+  m_eventTexturesDone[index]->Set();
+  return true;
+#endif
+}
+
+//********************************************************************************************************
 // CoreVideoRef Texture creation, deletion, copying + clearing
 //********************************************************************************************************
 void CLinuxRendererGLES::UploadCVRefTexture(int index)
@@ -1888,6 +2500,9 @@ bool CLinuxRendererGLES::Supports(EDEINTERLACEMODE mode)
   if(m_renderMethod & RENDER_CVREF)
     return false;
 
+  if(m_renderMethod & RENDER_MFC)
+    return false;
+
   if(mode == VS_DEINTERLACEMODE_AUTO
   || mode == VS_DEINTERLACEMODE_FORCE)
     return true;
@@ -1908,6 +2523,9 @@ bool CLinuxRendererGLES::Supports(EINTERLACEMETHOD method)
     return false;
 
   if(m_renderMethod & RENDER_CVREF)
+    return false;
+
+  if(m_renderMethod & RENDER_MFC)
     return false;
 
   if(method == VS_INTERLACEMETHOD_AUTO)
@@ -1958,6 +2576,9 @@ EINTERLACEMETHOD CLinuxRendererGLES::AutoInterlaceMethod()
   if(m_renderMethod & RENDER_CVREF)
     return VS_INTERLACEMETHOD_NONE;
 
+  if(m_renderMethod & RENDER_MFC)
+    return VS_INTERLACEMETHOD_NONE;
+
 #if defined(__i386__) || defined(__x86_64__)
   return VS_INTERLACEMETHOD_DEINTERLACE_HALF;
 #else
@@ -1981,6 +2602,13 @@ void CLinuxRendererGLES::AddProcessor(struct __CVBuffer *cvBufferRef)
   buf.cvBufferRef = cvBufferRef;
   // retain another reference, this way dvdplayer and renderer can issue releases.
   CVBufferRetain(buf.cvBufferRef);
+}
+#endif
+#if defined(HAVE_MFCDECODER)
+void CLinuxRendererGLES::AddProcessor(DVDVideoPicture *picture)
+{
+  YUVBUFFER &buf = m_buffers[NextYV12Texture()];
+  buf.mfcBuffer = picture->mfcBuffer;
 }
 #endif
 
