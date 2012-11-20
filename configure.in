@@ -130,6 +130,8 @@ vtbdecoder_enabled="== VTBDecoder support enabled. =="
 vtbdecoder_disabled="== VTBDecoder support manually disabled. =="
 openmax_disabled="== OpenMax support manually disabled. =="
 openmax_not_found="== Could not find libnvomx. OpenMax support disabled. =="
+cedar_disabled="== Cedar HW support enabled. =="
+cedar_enabled="== Cedar HW support enabled. =="
 ssh_not_found="== Could not find libssh. =="
 ssh_disabled="== SSH SFTP disabled. =="
 librtmp_not_found="== Could not find libRTMP. RTMP support disabled. =="
@@ -271,6 +273,12 @@ AC_ARG_ENABLE([tegra],
   [enable Tegra2 arm (default is no)])],
   [use_tegra=$enableval],
   [use_tegra=no])
+
+AC_ARG_ENABLE([cedar],
+  [AS_HELP_STRING([--enable-cedar],
+  [enable Cedar HW decoding (default is no)])],
+  [use_cedar=$enableval],
+  [use_cedar=no])
 
 AC_ARG_ENABLE([profiling],
   [AS_HELP_STRING([--enable-profiling],
@@ -1815,6 +1823,18 @@ else
   fi
 fi
 
+# Cedar HW decoder
+if test "x$use_cedar" != "xno"; then
+  AC_DEFINE([HAVE_LIBCEDAR], [1], [Define to 1 if you have the 'cedar' librarie)])
+  AC_MSG_NOTICE($cedar_enabled)
+  use_cedar="yes"
+  USE_CEDAR=1
+else
+  AC_MSG_NOTICE($cedar_disabled)
+  use_cedar="no"
+  USE_CEDAR=0
+fi
+
 # yajl version check (yajl_version.h was added in yajl 2.0)
 AC_CHECK_HEADERS([yajl/yajl_version.h], [], [
 AC_DEFINE(YAJL_MAJOR, 1, [yajl version 1])
@@ -1979,6 +1999,12 @@ if test "$use_openmax" != "no"; then
   final_message="$final_message\n  OpenMax:\tYes"
 else
   final_message="$final_message\n  OpenMax:\tNo"
+fi
+
+if test "$use_cedar" != "no"; then
+  final_message="$final_message\n  CedarHW:\tYes"
+else
+  final_message="$final_message\n  CedarHW:\tNo"
 fi
 
 if test "$use_joystick" = "yes"; then
@@ -2442,6 +2468,7 @@ AC_SUBST(USE_LIBAFPCLIENT)
 AC_SUBST(USE_AIRPLAY)
 AC_SUBST(USE_VDA)
 AC_SUBST(USE_OPENMAX)
+AC_SUBST(USE_CEDAR)
 AC_SUBST(USE_PULSE)
 AC_SUBST(USE_XRANDR)
 AC_SUBST(USE_ALSA)
