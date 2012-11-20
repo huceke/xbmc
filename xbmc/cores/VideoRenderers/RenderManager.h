@@ -22,6 +22,12 @@
 
 #include <list>
 
+#if (defined HAVE_CONFIG_H) && (!defined WIN32)
+  #include "config.h"
+#elif defined(_WIN32)
+#include "system.h"
+#endif
+
 #include "cores/VideoRenderers/BaseRenderer.h"
 #include "guilib/Geometry.h"
 #include "guilib/Resolution.h"
@@ -29,6 +35,9 @@
 #include "threads/Thread.h"
 #include "settings/VideoSettings.h"
 #include "OverlayRenderer.h"
+#if defined(HAVE_LIBCEDAR)
+  #include "OverlayRendererCedar.h"
+#endif
 
 class CRenderCapture;
 
@@ -43,6 +52,9 @@ class CWinRenderer;
 class CLinuxRenderer;
 class CLinuxRendererGL;
 class CLinuxRendererGLES;
+#if defined(HAVE_LIBCEDAR)
+class COverlayRenderCedar;
+#endif
 
 class CXBMCRenderManager
 {
@@ -110,7 +122,9 @@ public:
 
   void UpdateResolution();
 
-#ifdef HAS_GL
+#if defined(HAVE_LIBCEDAR)
+  COverlayRendererCedar *m_pRenderer;
+#elif HAS_GL
   CLinuxRendererGL    *m_pRenderer;
 #elif HAS_GLES == 2
   CLinuxRendererGLES  *m_pRenderer;

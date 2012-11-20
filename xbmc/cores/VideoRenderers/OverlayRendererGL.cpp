@@ -26,7 +26,9 @@
 #ifdef HAS_GL
   #include "LinuxRendererGL.h"
 #elif HAS_GLES == 2
+#if !defined(HAVE_LIBCEDAR)
   #include "LinuxRendererGLES.h"
+#endif
   #include "guilib/MatrixGLES.h"
 #endif
 #include "RenderManager.h"

@@ -35,7 +35,9 @@
 #include "settings/GUISettings.h"
 #include "settings/AdvancedSettings.h"
 
-#if defined(HAS_GL)
+#if defined(HAVE_LIBCEDAR)
+  #include "OverlayRendererCedar.h"
+#elif defined(HAS_GL)
   #include "LinuxRendererGL.h"
 #elif HAS_GLES == 2
   #include "LinuxRendererGLES.h"
@@ -325,7 +327,9 @@ unsigned int CXBMCRenderManager::PreInit()
   m_bPauseDrawing = false;
   if (!m_pRenderer)
   {
-#if defined(HAS_GL)
+#if defined(HAVE_LIBCEDAR)
+    m_pRenderer = new COverlayRendererCedar();
+#elif defined(HAS_GL)
     m_pRenderer = new CLinuxRendererGL();
 #elif HAS_GLES == 2
     m_pRenderer = new CLinuxRendererGLES();
@@ -813,8 +817,18 @@ int CXBMCRenderManager::AddVideoPicture(DVDVideoPicture& pic)
   || pic.format == RENDER_FMT_YUV420P10
   || pic.format == RENDER_FMT_YUV420P16)
   {
+#ifdef HAVE_LIBCEDAR
+    m_pRenderer->AddProcessor(pic);
+#else
     CDVDCodecUtils::CopyPicture(&image, &pic);
+#endif
   }
+#ifdef HAVE_LIBCEDAR
+  else if(pic.format == RENDER_FMT_BYPASS_CEDAR)
+  {
+    m_pRenderer->AddProcessor(pic);
+  }
+#endif
   else if(pic.format == RENDER_FMT_NV12)
   {
     CDVDCodecUtils::CopyNV12Picture(&image, &pic);
@@ -822,7 +836,11 @@ int CXBMCRenderManager::AddVideoPicture(DVDVideoPicture& pic)
   else if(pic.format == RENDER_FMT_YUYV422
        || pic.format == RENDER_FMT_UYVY422)
   {
+#ifdef HAVE_LIBCEDAR
+    m_pRenderer->AddProcessor(pic);
+#else
     CDVDCodecUtils::CopyYUV422PackedPicture(&image, &pic);
+#endif
   }
   else if(pic.format == RENDER_FMT_DXVA)
   {
