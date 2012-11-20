@@ -280,6 +280,10 @@ void CDVDPlayerVideo::CloseStream(bool bWaitForBuffers)
   CLog::Log(LOGNOTICE, "deleting video codec");
   if (m_pVideoCodec)
   {
+#if defined(HAS_VIDEO_PLAYBACK) && defined(HAVE_LIBCEDAR)
+    /* cose renderer before decoder, the renderer could hold data from the decoder */
+    g_renderManager.UnInit();
+#endif
     m_pVideoCodec->Dispose();
     delete m_pVideoCodec;
     m_pVideoCodec = NULL;
@@ -1126,6 +1130,9 @@ int CDVDPlayerVideo::OutputPicture(const DVDVideoPicture* src, double pts)
         break;
       case RENDER_FMT_BYPASS:
         formatstr = "BYPASS";
+        break;
+      case RENDER_FMT_BYPASS_CEDAR:
+        formatstr = "BYPASS_CEDAR";
         break;
       case RENDER_FMT_NONE:
         formatstr = "NONE";

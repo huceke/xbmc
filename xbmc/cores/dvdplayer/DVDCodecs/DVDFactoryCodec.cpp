@@ -48,7 +48,9 @@
 #include "Overlay/DVDOverlayCodecText.h"
 #include "Overlay/DVDOverlayCodecTX3G.h"
 #include "Overlay/DVDOverlayCodecFFmpeg.h"
-
+#if defined(HAVE_LIBCEDAR)
+#include "Video/DVDVideoCodecCedar.h"
+#endif
 
 #include "DVDStreamInfo.h"
 #include "settings/GUISettings.h"
@@ -169,8 +171,18 @@ CDVDVideoCodec* CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInfo &hint, unsigne
 #elif defined(_LINUX) && !defined(TARGET_DARWIN)
   hwSupport += "VAAPI:no ";
 #endif
+#if defined(HAVE_LIBCEDAR)
+  hwSupport += "CEDAR:yes ";
+#else
+  hwSupport += "CEDAR:no ";
+#endif
 
   CLog::Log(LOGDEBUG, "CDVDFactoryCodec: compiled in hardware support: %s", hwSupport.c_str());
+
+#if defined(HAVE_LIBCEDAR)
+  CLog::Log(LOGINFO, "Trying Cedar Video Decoder...");
+  if ( (pCodec = OpenCodec(new CDVDVideoCodecCedar(), hint, options)) ) return pCodec;
+#endif
 
   // dvd's have weird still-frames in it, which is not fully supported in ffmpeg
   if(hint.stills && (hint.codec == CODEC_ID_MPEG2VIDEO || hint.codec == CODEC_ID_MPEG1VIDEO))
