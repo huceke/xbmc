@@ -25,6 +25,7 @@
 #include "utils/log.h"
 #include "EGLNativeTypeAndroid.h"
 #include "EGLNativeTypeAmlogic.h"
+#include "EGLNativeTypeGeneric.h"
 #include "EGLNativeTypeRaspberryPI.h"
 #include "EGLWrapper.h"
 
@@ -74,6 +75,20 @@ bool CEGLWrapper::Initialize(const std::string &implementation)
   {
     delete nativeGuess;
     nativeGuess = new CEGLNativeTypeRaspberryPI;
+    if (nativeGuess->CheckCompatibility())
+    {
+      if(implementation == nativeGuess->GetNativeName() || implementation == "auto")
+      {
+        m_nativeTypes = nativeGuess;
+        ret = true;
+      }
+    }
+  }
+
+  if (!ret)
+  {
+    delete nativeGuess;
+    nativeGuess = new CEGLNativeTypeGeneric;
     if (nativeGuess->CheckCompatibility())
     {
       if(implementation == nativeGuess->GetNativeName() || implementation == "auto")
