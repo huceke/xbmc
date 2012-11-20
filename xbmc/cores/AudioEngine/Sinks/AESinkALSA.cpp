@@ -756,6 +756,15 @@ void CAESinkALSA::EnumerateDevicesEx(AEDeviceInfoList &list)
       {
         EnumerateDevice(list, name, desc ? desc : name, config);
       }
+      else
+      {
+        /* sun4i whilelist */
+        std::string strDevice = std::string(name);
+        size_t found = strDevice.find("sun4i");
+
+        if(found != std::string::npos)
+          EnumerateDevice(list, name, desc ? desc : name, config);
+      }
     }
     free(io);
     free(name);
@@ -856,6 +865,10 @@ AEDeviceType CAESinkALSA::AEDeviceTypeFromName(const std::string &name)
     return AE_DEVTYPE_HDMI;
   else if (name.substr(0, 6) == "iec958" || name.substr(0, 5) == "spdif")
     return AE_DEVTYPE_IEC958;
+
+  /* sun4i hdmi device */
+  if(name.find("sun4isndhdmi") != std::string::npos)
+    return AE_DEVTYPE_HDMI;
 
   return AE_DEVTYPE_PCM;
 }
