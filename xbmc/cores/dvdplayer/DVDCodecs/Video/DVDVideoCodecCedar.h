@@ -132,6 +132,7 @@ protected:
   CBitstreamConverter             *m_converter;
   bool                            m_video_convert;
   CStdString                      m_video_codec_name;
+  bool                            m_valid_pts;
 
   unsigned int m_input_size;
 
@@ -139,6 +140,7 @@ protected:
 
   CCedarDecoder                   *m_cedarDecoder;
 
+  std::queue<double> m_dts_queue;
   typedef std::list<CCedarPackage*>   PackageList;
   PackageList                         m_cedarPackages;
 

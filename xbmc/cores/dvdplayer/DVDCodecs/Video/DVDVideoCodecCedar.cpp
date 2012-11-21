@@ -64,6 +64,7 @@ CDVDVideoCodecCedar::CDVDVideoCodecCedar()
   m_Frames            = 0;
   m_cedarDecoder      = NULL;
   m_lastDecodeTime    = 0;
+  m_valid_pts         = false;
 
   memset(&m_videobuffer, 0, sizeof(DVDVideoPicture));
 }
@@ -239,6 +240,11 @@ void CDVDVideoCodecCedar::Dispose()
 
   memset(&m_videobuffer, 0, sizeof(DVDVideoPicture));
 
+  while (!m_dts_queue.empty())
+    m_dts_queue.pop();
+
+  m_valid_pts = false;
+
   m_dllCedar.Unload();
 }
 
@@ -249,10 +255,17 @@ void CDVDVideoCodecCedar::SetDropState(bool bDrop)
 
   if(m_drop_state)
   {
-    vpicture_t *picture = m_cedarDecoder->GetDisplayFrame();
-    if(picture)
+    while(m_cedarDecoder->ReadyFrames() > 1)
     {
-      m_cedarDecoder->ReturnDisplayFrame(picture);
+      vpicture_t *picture = m_cedarDecoder->GetDisplayFrame();
+      if(picture)
+      {
+        m_cedarDecoder->ReturnDisplayFrame(picture);
+        if(!m_dts_queue.empty())
+          m_dts_queue.pop();
+      }
+      else
+        break;
     }
   }
 }
@@ -283,7 +296,7 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
 
   if(demuxer_bytes && demuxer_content)
   {
-    CCedarPackage *cedarPackage = new CCedarPackage(demuxer_content, demuxer_bytes, dts, pts / 1000, m_drop_state);
+    CCedarPackage *cedarPackage = new CCedarPackage(demuxer_content, demuxer_bytes, dts, pts, m_drop_state);
     m_cedarPackages.push_back(cedarPackage);
   }
 
@@ -293,7 +306,11 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
 
     if(cedarPackage)
     {
-      vstream_data_t *streamData = m_cedarDecoder->AllocateBuffer(cedarPackage->Size, cedarPackage->pts);
+      double pts = (cedarPackage->pts == DVD_NOPTS_VALUE) ? 0 : cedarPackage->pts / 1000;
+
+      m_valid_pts = (cedarPackage->pts != DVD_NOPTS_VALUE);
+
+      vstream_data_t *streamData = m_cedarDecoder->AllocateBuffer(cedarPackage->Size, pts);
 
       if(streamData)
       {
@@ -301,12 +318,16 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
         m_cedarDecoder->AddBuffer(streamData);
   
         m_cedarPackages.pop_front();
+
+        m_dts_queue.push(cedarPackage->dts);
+
         delete cedarPackage;
+
       }
     }
   }
 
-  //if(m_cedarDecoder->FreeFrames() > 1 && m_cedarDecoder->ReadyBuffers())
+  if(m_cedarDecoder->FreeFrames() > 1 && m_cedarDecoder->ReadyBuffers())
   {
     unsigned int start = XbmcThreads::SystemClockMillis();
     s32 decoderRet = m_cedarDecoder->Decode(false, pts);
@@ -317,7 +338,7 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
       return VC_ERROR;
     }
 
-    if(m_lastDecodeTime > 30)
+    if(m_lastDecodeTime > 40)
       printf("decode tooked %3d ms\n", m_lastDecodeTime);
   }
 
@@ -358,8 +379,19 @@ bool CDVDVideoCodecCedar::GetPicture(DVDVideoPicture *pDvdVideoPicture)
     /* set ref on the frame */
 
     m_videobuffer.format          = RENDER_FMT_BYPASS_CEDAR;
-    m_videobuffer.pts             = cedarPicture->Picture->pts * 1000;
-    m_videobuffer.dts             = cedarPicture->Picture->pts * 1000;
+    m_videobuffer.pts             = DVD_NOPTS_VALUE;
+    m_videobuffer.dts             = DVD_NOPTS_VALUE;
+
+    if(m_valid_pts)
+      m_videobuffer.pts           = cedarPicture->Picture->pts * 1000;
+
+    if (!m_dts_queue.empty())
+    {
+      m_videobuffer.dts = m_dts_queue.front();
+      m_dts_queue.pop();
+    }
+
+    //printf("pts %f dts %f\n", m_videobuffer.pts, m_videobuffer.dts);
 
     m_videobuffer.iDisplayWidth   = m_decoded_width;
     m_videobuffer.iDisplayHeight  = m_decoded_height;
@@ -375,8 +407,7 @@ bool CDVDVideoCodecCedar::GetPicture(DVDVideoPicture *pDvdVideoPicture)
 
     m_videobuffer.iFlags          = DVP_FLAG_ALLOCATED;
     m_videobuffer.iFlags          |= m_drop_state ? DVP_FLAG_DROPPED : 0;
-    if(m_lastDecodeTime > 30)
-      m_videobuffer.iFlags        |= DVP_FLAG_DROPPED;
+
     bRet = true;
   }
   else
