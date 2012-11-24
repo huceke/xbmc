@@ -41,7 +41,6 @@
 #include <queue>
 #include <deque>
 
-class CBitstreamConverter;
 class CDVDVideoCodecCedar;
 
 struct CCedarPackage
@@ -129,10 +128,9 @@ protected:
   bool                            m_setStartTime;
   uint8_t                         *m_extradata;
   int                             m_extrasize;
-  CBitstreamConverter             *m_converter;
-  bool                            m_video_convert;
   CStdString                      m_video_codec_name;
   bool                            m_valid_pts;
+  uint64_t                        m_packet_count;
 
   unsigned int m_input_size;
 
