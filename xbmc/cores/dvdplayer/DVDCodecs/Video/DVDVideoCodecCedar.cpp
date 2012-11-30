@@ -92,11 +92,9 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
   if (cas(&g_cedaropen, 0, 1) != 0)
   {
     CLog::Log(LOGERROR, "%s::%s decoder already in use\n", CLASSNAME, __func__);
-    printf("%s::%s decoder already in use 0x%08x\n", CLASSNAME, __func__, this);
     return false;
   }
 
-  printf("CDVDVideoCodecCedar::Open 0x%08x\n", this);
   if(!m_dllCedar.Load())
     return false;
 
@@ -285,9 +283,6 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 
   m_is_open = true;
 
-  printf("%s::%s - Cedar Decoder opened with codec : %s [%dx%d]\n", CLASSNAME, __func__,
-            m_video_codec_name.c_str(), m_decoded_width, m_decoded_height);
-
   CLog::Log(LOGINFO, "%s::%s - Cedar Decoder opened with codec : %s [%dx%d]", CLASSNAME, __func__,
             m_video_codec_name.c_str(), m_decoded_width, m_decoded_height);
 
@@ -296,8 +291,6 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 
 void CDVDVideoCodecCedar::Dispose()
 {
-  printf("CDVDVideoCodecCedar::Dispose 0x%08x\n", this);
-
   if(m_is_open)
     m_cedarDecoder->Close();
 
