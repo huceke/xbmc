@@ -3,7 +3,7 @@ INCLUDES=-I.
 SRCS = WinSystemEGL.cpp
 SRCS+= EGLNativeTypeAmlogic.cpp
 SRCS+= EGLNativeTypeAndroid.cpp
-SRCS+= EGLNativeTypeGeneric.cpp
+SRCS+= EGLNativeTypeCedar.cpp
 SRCS+= EGLNativeTypeRaspberryPI.cpp
 SRCS+= EGLWrapper.cpp
 

@@ -25,7 +25,7 @@
 #include "utils/log.h"
 #include "EGLNativeTypeAndroid.h"
 #include "EGLNativeTypeAmlogic.h"
-#include "EGLNativeTypeGeneric.h"
+#include "EGLNativeTypeCedar.h"
 #include "EGLNativeTypeRaspberryPI.h"
 #include "EGLWrapper.h"
 
@@ -88,7 +88,7 @@ bool CEGLWrapper::Initialize(const std::string &implementation)
   if (!ret)
   {
     delete nativeGuess;
-    nativeGuess = new CEGLNativeTypeGeneric;
+    nativeGuess = new CEGLNativeTypeCedar;
     if (nativeGuess->CheckCompatibility())
     {
       if(implementation == nativeGuess->GetNativeName() || implementation == "auto")
