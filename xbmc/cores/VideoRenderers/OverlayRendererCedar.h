@@ -149,7 +149,7 @@ class COverlayRendererCedar : public CBaseRenderer
       YV12Image image;
       unsigned  flipindex;
 
-      CedarPicture *softPicture;
+      CedarPicture *cedarPicture;
     };
 
     YUVBUFFER     m_buffers[NUM_BUFFERS];

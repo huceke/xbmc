@@ -63,7 +63,7 @@ COverlayRendererCedar::COverlayRendererCedar()
     img.plane[0]  = NULL;
     img.plane[1]  = NULL;
     img.plane[2]  = NULL;
-    m_buffers[i].softPicture  = NULL;
+    m_buffers[i].cedarPicture  = NULL;
   }
   m_cedarDecoder = NULL;
 
@@ -228,7 +228,7 @@ void COverlayRendererCedar::FlipPage(int source)
 
   /*
   CedarPicture *cedarPicture = NULL;
-  cedarPicture = m_buffers[m_currentBuffer].softPicture;
+  cedarPicture = m_buffers[m_currentBuffer].cedarPicture;
   */
 
   /* switch source */
@@ -244,8 +244,8 @@ void COverlayRendererCedar::FlipPage(int source)
 
     __disp_pixel_fmt_t pixel_format = picture->pixel_format == PIXEL_FORMAT_AW_YUV422 ? DISP_FORMAT_YUV422 : DISP_FORMAT_YUV420;
 
-    m_overlayCedar.RenderFrame(cedarPicture->yAddr, cedarPicture->uAddr, cedarPicture->vAddr,
-        cedarPicture->ySize, cedarPicture->uSize, cedarPicture->vSize,
+    m_overlayCedar.RenderFrame((unsigned int)picture->y, (unsigned int)picture->u, (unsigned int)picture->v,
+        (unsigned int)picture->size_y, (unsigned int)picture->size_u, (unsigned int)picture->size_v,
         pixel_format, picture->frame_rate, m_pictureCount);
     m_overlayCedar.WaitVSYNC();
     WaitFrame(m_pictureCount);
@@ -277,11 +277,15 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
       m_cedarDecoder = m_dllCedar.AllocCedarDecoder();
 
     /* allocate softpicture */
-    if(!buf.softPicture)
+    if(!buf.cedarPicture)
     {
-      vpicture_t *softPicture = (vpicture_t*)malloc(sizeof(vpicture_t));
+      buf.cedarPicture = (CedarPicture*)malloc(sizeof(CedarPicture));
+      memset(buf.cedarPicture, 0, sizeof(CedarPicture));
 
+      vpicture_t *softPicture = (vpicture_t*)malloc(sizeof(vpicture_t));
       memset(softPicture, 0, sizeof(vpicture_t));
+
+      buf.cedarPicture->Picture  = softPicture;
 
       /* setup framebuffer picture */
       softPicture->size_y = (pic.iWidth * pic.iHeight);
@@ -302,24 +306,13 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
       softPicture->aspect_ratio     = 1000;
 
       softPicture->id = m_pictureCount++; 
-
-      buf.softPicture = (CedarPicture*)malloc(sizeof(CedarPicture));
-      memset(buf.softPicture, 0, sizeof(CedarPicture));
-
-      buf.softPicture->Picture  = softPicture;
-      buf.softPicture->yAddr    = (unsigned int)softPicture->y;
-      buf.softPicture->uAddr    = (unsigned int)softPicture->u;
-      buf.softPicture->vAddr    = (unsigned int)softPicture->v;
-      buf.softPicture->ySize    = (unsigned int)softPicture->size_y;
-      buf.softPicture->uSize    = (unsigned int)softPicture->size_u;
-      buf.softPicture->vSize    = (unsigned int)softPicture->size_v;
     }
 
     /* copy to virtual adress */
 
     int i = 0;
     unsigned char *src = pic.data[0];
-    unsigned char *dst = buf.softPicture->Picture->y;
+    unsigned char *dst = buf.cedarPicture->Picture->y;
     int w = pic.iWidth;
     int h = pic.iHeight;
     for(i = 0; i < h; i++)
@@ -330,7 +323,7 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
     }
 
     src = pic.data[1];
-    dst = buf.softPicture->Picture->u;
+    dst = buf.cedarPicture->Picture->u;
 
     w >>= 1;
     h >>= 1;
@@ -350,7 +343,7 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
     }
 
     src = pic.data[2];
-    dst = buf.softPicture->Picture->v;
+    dst = buf.cedarPicture->Picture->v;
 
     if(w == pic.iLineSize[1])
     {
@@ -369,18 +362,18 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
   else
   {
     if(pic.cedarPicture)
-      buf.softPicture = pic.cedarPicture;
+      buf.cedarPicture = pic.cedarPicture;
   }
 
-  CedarPicture *cedarPicture = buf.softPicture;
+  CedarPicture *cedarPicture = buf.cedarPicture;
   if(cedarPicture && cedarPicture->Picture)
   {
     vpicture_t *picture = cedarPicture->Picture;
 
     __disp_pixel_fmt_t pixel_format = picture->pixel_format == PIXEL_FORMAT_AW_YUV422 ? DISP_FORMAT_YUV422 : DISP_FORMAT_YUV420;
 
-    m_overlayCedar.RenderFrame(cedarPicture->yAddr, cedarPicture->uAddr, cedarPicture->vAddr,
-        cedarPicture->ySize, cedarPicture->uSize, cedarPicture->vSize,
+    m_overlayCedar.RenderFrame((unsigned int)picture->y, (unsigned int)picture->u, (unsigned int)picture->v,
+        (unsigned int)picture->size_y, (unsigned int)picture->size_u, (unsigned int)picture->size_v,
         pixel_format, picture->frame_rate, m_pictureCount);
     m_overlayCedar.WaitVSYNC();
     //WaitFrame(m_pictureCount);
@@ -509,23 +502,24 @@ bool COverlayRendererCedar::FreeYV12Image(unsigned int index)
     im.plane[i] = NULL;
   }
 
-  if(m_buffers[index].softPicture)
+  if(m_buffers[index].cedarPicture)
   {
     if(m_format == RENDER_FMT_YUV420P)
     {
-      CedarPicture *softPicture = m_buffers[index].softPicture;
-      if(softPicture->yAddr)
-        m_cedarDecoder->MemPfree(softPicture->Picture->u);
-      if(softPicture->uAddr)
-        m_cedarDecoder->MemPfree(softPicture->Picture->v);
-      if(softPicture->vAddr)
-        m_cedarDecoder->MemPfree(softPicture->Picture->v);
+      vpicture_t *picture = m_buffers[index].cedarPicture->Picture;
 
-      free(softPicture->Picture);
-      free(softPicture);
+      if(picture->y)
+        m_cedarDecoder->MemPfree(picture->u);
+      if(picture->u)
+        m_cedarDecoder->MemPfree(picture->v);
+      if(picture->v)
+        m_cedarDecoder->MemPfree(picture->v);
+
+      free(m_buffers[index].cedarPicture->Picture);
+      free(m_buffers[index].cedarPicture);
     }
   }
-  m_buffers[index].softPicture = NULL;
+  m_buffers[index].cedarPicture = NULL;
 
   memset(&im , 0, sizeof(YV12Image));
 

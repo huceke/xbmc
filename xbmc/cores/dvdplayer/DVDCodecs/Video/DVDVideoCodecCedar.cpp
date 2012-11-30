@@ -439,13 +439,6 @@ bool CDVDVideoCodecCedar::GetPicture(DVDVideoPicture *pDvdVideoPicture)
   if(picture)
   {
     m_cedarPicture.Picture  = picture;
-    m_cedarPicture.yAddr    = (unsigned int)picture->y;
-    m_cedarPicture.uAddr    = (unsigned int)picture->u;
-    m_cedarPicture.vAddr    = (unsigned int)picture->v;
-    m_cedarPicture.ySize    = (unsigned int)picture->size_y;
-    m_cedarPicture.uSize    = (unsigned int)picture->size_u;
-    m_cedarPicture.vSize    = (unsigned int)picture->size_v;
-
     m_videobuffer.cedarPicture = &m_cedarPicture;
   
     /* set ref on the frame */

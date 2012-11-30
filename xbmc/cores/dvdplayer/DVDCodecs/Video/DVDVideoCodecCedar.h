@@ -47,12 +47,6 @@ class CBitstreamConverter;
 typedef struct CedarPicture
 {
   vpicture_t *Picture;
-  unsigned int yAddr;
-  unsigned int uAddr;
-  unsigned int vAddr;
-  unsigned int ySize;
-  unsigned int uSize;
-  unsigned int vSize;
 } CedarPicture;
 
 class CDVDVideoCodecCedar : public CDVDVideoCodec
