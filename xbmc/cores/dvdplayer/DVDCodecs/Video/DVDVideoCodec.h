@@ -37,7 +37,7 @@ namespace VAAPI { struct CHolder; }
 class CVDPAU;
 class COpenMax;
 class COpenMaxVideo;
-struct CCedarPicture;
+struct CedarPicture;
 struct OpenMaxVideoBuffer;
 
 // should be entirely filled by all codecs
@@ -72,7 +72,7 @@ struct DVDVideoPicture
     };
   };
 
-  struct CCedarPicture *cedarPicture;
+  CedarPicture *cedarPicture;
 
   unsigned int iFlags;
 

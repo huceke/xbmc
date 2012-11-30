@@ -32,17 +32,17 @@
 #include "DVDVideoCodecCedar.h"
 #include "DynamicDll.h"
 #include "cores/VideoRenderers/RenderFormats.h"
+#include "utils/BitstreamConverter.h"
 
 #include "guilib/GraphicContext.h"
 
 #include "utils/log.h"
 #include "linux/XMemUtils.h"
 #include "DVDClock.h"
+#include "threads/Atomics.h"
 
 #include <sys/time.h>
 #include <inttypes.h>
-
-#include "utils/fastmemcpy.h"
 
 #ifdef CLASSNAME
 #undef CLASSNAME
@@ -52,41 +52,80 @@
 #define ALIGN(x, n) (((x) + (n) - 1) & (~((n) - 1)))
 #define CODEC_4CC(c1,c2,c3,c4) (((u32)(c4)<<24)|((u32)(c3)<<16)|((u32)(c2)<<8)|(u32)(c1))
 
+static long g_cedaropen = 0;
+
 CDVDVideoCodecCedar::CDVDVideoCodecCedar()
 {
-  m_is_open           = false;
-  m_extradata         = NULL;
-  m_extrasize         = 0;
   m_video_codec_name  = "";
-  m_Frames            = 0;
   m_cedarDecoder      = NULL;
-  m_lastDecodeTime    = 0;
   m_valid_pts         = false;
   m_packet_count      = 0;
+  m_converter         = NULL;
+  m_convert           = false;
+  m_is_open           = false;
 
   memset(&m_videobuffer, 0, sizeof(DVDVideoPicture));
 }
 
 CDVDVideoCodecCedar::~CDVDVideoCodecCedar()
 {
-  if (m_is_open)
-    Dispose();
+  Dispose();
+}
+
+bool CDVDVideoCodecCedar::NaluFormatStartCodes(enum CodecID codec, uint8_t *in_extradata, int in_extrasize)
+{
+  switch(codec)
+  {
+    case CODEC_ID_H264:
+      if (in_extrasize < 7 || in_extradata == NULL)
+        return true;
+      // valid avcC atom data always starts with the value 1 (version), otherwise annexb
+      else if ( *in_extradata != 1 )
+        return true;
+    default: break;
+  }
+  return false;
 }
 
 bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 {
+  if (cas(&g_cedaropen, 0, 1) != 0)
+  {
+    CLog::Log(LOGERROR, "%s::%s decoder already in use\n", CLASSNAME, __func__);
+    printf("%s::%s decoder already in use 0x%08x\n", CLASSNAME, __func__, this);
+    return false;
+  }
+
+  printf("CDVDVideoCodecCedar::Open 0x%08x\n", this);
   if(!m_dllCedar.Load())
     return false;
 
+  Dispose();
+
   m_decoded_width   = hints.width;
   m_decoded_height  = hints.height;
-  m_picture_width   = m_decoded_width;
-  m_picture_height  = m_decoded_height;
 
   if(!m_decoded_width || !m_decoded_height)
   {
-    CLog::Log(LOGDEBUG, "%s::%s unknown decoded size %dx%d\n", CLASSNAME, __func__, m_decoded_width, m_decoded_height);
+    CLog::Log(LOGERROR, "%s::%s unknown decoded size %dx%d\n", CLASSNAME, __func__, m_decoded_width, m_decoded_height);
     return false;
+  }
+
+  m_converter = new CBitstreamConverter();
+  if(!m_converter)
+  {
+    CLog::Log(LOGERROR, "%s::%s allocationg bistream converter\n", CLASSNAME, __func__);
+    return false;
+  }
+
+  int extrasize = hints.extrasize;
+  uint8_t *extradata = (uint8_t *)hints.extradata;
+
+  m_convert = m_converter->Open(hints.codec, (uint8_t *)hints.extradata, hints.extrasize, false);
+  if(m_convert)
+  {
+    extrasize = m_converter->GetExtraSize();
+    extradata = m_converter->GetExtraData();
   }
 
   vstream_info_t    stream_info;
@@ -94,13 +133,28 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 
   stream_info.container_format  = CONTAINER_FORMAT_UNKNOW;
 
+  /*
+  printf("extradata : ");
+  for(int i = 0; i < extrasize; i++)
+  {
+    uint8_t *p = (uint8_t *)extradata;
+    printf("%02x ", p[i]);
+  }
+  printf("\n");
+  */
+
   switch(hints.codec)
   {
     case CODEC_ID_H264:
       stream_info.format              = STREAM_FORMAT_H264;
       stream_info.sub_format          = STREAM_SUB_FORMAT_UNKNOW;
-      if(hints.codec_tag == 27)       //M2TS and TS
+      /*
+      if(hints.codec_tag == 27 || NaluFormatStartCodes(hints.codec, extradata, extrasize)) //M2TS and TS
+      {
+        printf("ts\n");
         stream_info.container_format  = CONTAINER_FORMAT_TS;
+      }
+      */
       m_video_codec_name              = "cedar-h264";
       break;
     case CODEC_ID_MPEG1VIDEO:
@@ -111,6 +165,8 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
     case CODEC_ID_MPEG2VIDEO:
       stream_info.format              = STREAM_FORMAT_MPEG2;
       stream_info.sub_format          = MPEG2_SUB_FORMAT_MPEG2;
+      extradata = NULL;
+      extrasize = 0;
       m_video_codec_name              = "cedar-mpeg2";
       break;
     case CODEC_ID_MSMPEG4V1:
@@ -199,13 +255,6 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
       return false;
   }
 
-  if(hints.extrasize > 0 && hints.extradata != NULL)
-  {
-    m_extrasize = hints.extrasize;
-    m_extradata = (uint8_t *)malloc(m_extrasize);
-    fast_memcpy(m_extradata, hints.extradata, hints.extrasize);
-  }
-
   stream_info.container_format    = CONTAINER_FORMAT_UNKNOW;
   stream_info.video_width         = m_decoded_width;
   stream_info.video_height        = m_decoded_height;
@@ -227,15 +276,17 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
     return false;
   }
 
-  if(!m_cedarDecoder->Open(&stream_info, m_extradata, m_extrasize))
+  if(!m_cedarDecoder->Open(&stream_info, extradata, extrasize))
   {
     CLog::Log(LOGERROR, "%s::%s Cedar decoder open\n", CLASSNAME, __func__);
     m_cedarDecoder->Close();
     return false;
   }
 
-  m_Frames        = 0;
-  m_is_open       = true;
+  m_is_open = true;
+
+  printf("%s::%s - Cedar Decoder opened with codec : %s [%dx%d]\n", CLASSNAME, __func__,
+            m_video_codec_name.c_str(), m_decoded_width, m_decoded_height);
 
   CLog::Log(LOGINFO, "%s::%s - Cedar Decoder opened with codec : %s [%dx%d]", CLASSNAME, __func__,
             m_video_codec_name.c_str(), m_decoded_width, m_decoded_height);
@@ -245,24 +296,19 @@ bool CDVDVideoCodecCedar::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
 
 void CDVDVideoCodecCedar::Dispose()
 {
-  ClearPackages();
+  printf("CDVDVideoCodecCedar::Dispose 0x%08x\n", this);
 
-  if(m_is_open && m_cedarDecoder)
+  if(m_is_open)
     m_cedarDecoder->Close();
 
   if(m_cedarDecoder)
-    m_cedarDecoder = m_dllCedar.FreeCedarDecoder(m_cedarDecoder);
+  {
+    cas(&g_cedaropen, 1, 0);
+    m_dllCedar.FreeCedarDecoder(m_cedarDecoder);
+    m_cedarDecoder = NULL;
+  }
   
-  m_is_open       = false;
-
-  if(m_extradata)
-    free(m_extradata);
-  m_extradata = NULL;
-  m_extrasize = 0;
-
   m_video_codec_name  = "";
-
-  m_lastDecodeTime    = 0;
 
   memset(&m_videobuffer, 0, sizeof(DVDVideoPicture));
 
@@ -273,17 +319,23 @@ void CDVDVideoCodecCedar::Dispose()
 
   m_packet_count = 0;
 
+  delete m_converter;
+  m_converter = NULL;
+  m_convert = false;
+
   m_dllCedar.Unload();
+
+  m_is_open = false;
 }
 
 void CDVDVideoCodecCedar::SetDropState(bool bDrop)
 {
-  if(m_drop_state != bDrop)
-    m_drop_state = bDrop;
+  m_drop_state = bDrop;
 
+  /*
   if(m_drop_state)
   {
-    while(m_cedarDecoder->ReadyFrames() > 1)
+    while(m_cedarDecoder->ReadyFrames())
     {
       vpicture_t *picture = m_cedarDecoder->GetDisplayFrame();
       if(picture)
@@ -296,6 +348,7 @@ void CDVDVideoCodecCedar::SetDropState(bool bDrop)
         break;
     }
   }
+  */
 }
 
 int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pts)
@@ -312,41 +365,41 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
     return ret;
   }
 
-  unsigned int demuxer_bytes = (unsigned int)iSize;
-  uint8_t *demuxer_content = pData;
+  int demuxer_bytes = 0;
+  uint8_t *demuxer_content = NULL;
+
+  if(m_convert)
+  {
+    m_converter->Convert(pData, iSize);
+    demuxer_bytes = m_converter->GetConvertSize();
+    demuxer_content = m_converter->GetConvertBuffer();
+  }
+  else
+  {
+    demuxer_bytes = iSize;
+    demuxer_content = pData;
+  }
 
   if(demuxer_bytes && demuxer_content)
   {
-    CCedarPackage *cedarPackage = new CCedarPackage(demuxer_content, demuxer_bytes, dts, pts, m_drop_state);
-    m_cedarPackages.push_back(cedarPackage);
-  }
+    double pts_cedar = (pts == DVD_NOPTS_VALUE) ? 0 : pts / 1000;
 
-  if(!m_cedarPackages.empty())
-  {
-    CCedarPackage *cedarPackage = m_cedarPackages.front();
+    m_valid_pts = (pts != DVD_NOPTS_VALUE);
 
-    if(cedarPackage)
+    vstream_data_t *streamData = m_cedarDecoder->AllocateBuffer(demuxer_bytes, pts_cedar);
+
+    if(streamData)
     {
-      double pts = (cedarPackage->pts == DVD_NOPTS_VALUE) ? 0 : cedarPackage->pts / 1000;
-
-      m_valid_pts = (cedarPackage->pts != DVD_NOPTS_VALUE);
-
-      vstream_data_t *streamData = m_cedarDecoder->AllocateBuffer(cedarPackage->Size, pts);
-
-      if(streamData)
-      {
-        m_cedarDecoder->AddBufferData(streamData, cedarPackage->Data, cedarPackage->Size);
-        m_cedarDecoder->AddBuffer(streamData);
+      m_cedarDecoder->AddBufferData(streamData, demuxer_content, demuxer_bytes);
+      m_cedarDecoder->AddBuffer(streamData);
   
-        m_cedarPackages.pop_front();
+      m_dts_queue.push(dts);
 
-        m_dts_queue.push(cedarPackage->dts);
-
-        m_packet_count++;
-
-        delete cedarPackage;
-
-      }
+      m_packet_count++;
+    }
+    else
+    {
+      CLog::Log(LOGERROR, "%s::%s decoder buffer full. frame dropped\n" , CLASSNAME, __func__);
     }
   }
 
@@ -354,14 +407,16 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
 
   if(m_cedarDecoder->FreeFrames() > 1 && m_cedarDecoder->ReadyBuffers() && m_packet_count > 1)
   {
-    unsigned int start = XbmcThreads::SystemClockMillis();
+    //unsigned int start = XbmcThreads::SystemClockMillis();
     s32 decoderRet = m_cedarDecoder->Decode(false, pts);
-    m_lastDecodeTime = XbmcThreads::SystemClockMillis() - start;
+    //int lastDecodeTime = XbmcThreads::SystemClockMillis() - start;
     if(decoderRet == VRESULT_ERR_NO_MEMORY || decoderRet == VRESULT_ERR_UNSUPPORTED)
     {
       CLog::Log(LOGERROR, "%s::%s bitstream unsupported\n", CLASSNAME, __func__);
       return VC_ERROR;
     }
+    //if(lastDecodeTime > 40)
+    //  printf("decode tooked %3d ms\n", lastDecodeTime);
     
     switch(decoderRet)
     {
@@ -371,18 +426,12 @@ int CDVDVideoCodecCedar::Decode(uint8_t *pData, int iSize, double dts, double pt
       case VRESULT_NO_BITSTREAM:
         ret |= VC_BUFFER;
         break;
-      defaul:
+      default:
         break;
     }
-
-    if(m_lastDecodeTime > 40)
-      printf("decode tooked %3d ms\n", m_lastDecodeTime);
   }
 
-  //printf("Ready %3d Free %3d Buffers %3d\n", m_cedarDecoder->ReadyFrames(), 
-  //    m_cedarDecoder->FreeFrames(), m_cedarDecoder->ReadyBuffers());
-
-  if(m_cedarDecoder->ReadyFrames() > 1)
+  if(m_cedarDecoder->ReadyFrames())
     ret |= VC_PICTURE;
 
   return ret;
@@ -393,23 +442,18 @@ bool CDVDVideoCodecCedar::GetPicture(DVDVideoPicture *pDvdVideoPicture)
   // clone the video picture buffer settings.
   bool bRet = false;
 
-  CCedarPicture *cedarPicture = NULL;
-
-  //printf("ReadyFrames %2d FreeFrames %2d MaxFrames %2d\n", 
-  //    m_cedarDecoder->ReadyFrames(), m_cedarDecoder->FreeFrames(), m_cedarDecoder->MaxFrames());
-
   vpicture_t *picture = m_cedarDecoder->GetDisplayFrame();
   if(picture)
   {
-    cedarPicture = new CCedarPicture(picture, (unsigned int)picture->y,
-          (unsigned int)picture->u, (unsigned int)picture->v,
-          (unsigned int)picture->size_y, (unsigned int)picture->size_u,
-          (unsigned int)picture->size_v);
-  }
+    m_cedarPicture.Picture  = picture;
+    m_cedarPicture.yAddr    = (unsigned int)picture->y;
+    m_cedarPicture.uAddr    = (unsigned int)picture->u;
+    m_cedarPicture.vAddr    = (unsigned int)picture->v;
+    m_cedarPicture.ySize    = (unsigned int)picture->size_y;
+    m_cedarPicture.uSize    = (unsigned int)picture->size_u;
+    m_cedarPicture.vSize    = (unsigned int)picture->size_v;
 
-  if(cedarPicture)
-  {
-    m_videobuffer.cedarPicture = cedarPicture;
+    m_videobuffer.cedarPicture = &m_cedarPicture;
   
     /* set ref on the frame */
 
@@ -418,7 +462,7 @@ bool CDVDVideoCodecCedar::GetPicture(DVDVideoPicture *pDvdVideoPicture)
     m_videobuffer.dts             = DVD_NOPTS_VALUE;
 
     if(m_valid_pts)
-      m_videobuffer.pts           = cedarPicture->Picture->pts * 1000;
+      m_videobuffer.pts           = m_cedarPicture.Picture->pts * 1000;
 
     if (!m_dts_queue.empty())
     {
@@ -430,18 +474,20 @@ bool CDVDVideoCodecCedar::GetPicture(DVDVideoPicture *pDvdVideoPicture)
 
     m_videobuffer.iDisplayWidth   = m_decoded_width;
     m_videobuffer.iDisplayHeight  = m_decoded_height;
-    m_videobuffer.iWidth          = cedarPicture->Picture->width;
-    m_videobuffer.iHeight         = cedarPicture->Picture->height;
+    m_videobuffer.iWidth          = m_cedarPicture.Picture->width;
+    m_videobuffer.iHeight         = m_cedarPicture.Picture->height;
 
-    m_videobuffer.data[0]         = cedarPicture->Picture->y;
-    m_videobuffer.data[1]         = cedarPicture->Picture->u;
-    m_videobuffer.data[2]         = cedarPicture->Picture->u;
-    m_videobuffer.iLineSize[0]    = cedarPicture->Picture->width;
-    m_videobuffer.iLineSize[1]    = cedarPicture->Picture->height / 2;
-    m_videobuffer.iLineSize[2]    = cedarPicture->Picture->height / 2;
+    m_videobuffer.data[0]         = m_cedarPicture.Picture->y;
+    m_videobuffer.data[1]         = m_cedarPicture.Picture->u;
+    m_videobuffer.data[2]         = m_cedarPicture.Picture->u;
+    m_videobuffer.iLineSize[0]    = m_cedarPicture.Picture->width;
+    m_videobuffer.iLineSize[1]    = m_cedarPicture.Picture->height / 2;
+    m_videobuffer.iLineSize[2]    = m_cedarPicture.Picture->height / 2;
 
     m_videobuffer.iFlags          = DVP_FLAG_ALLOCATED;
+    /*
     m_videobuffer.iFlags          |= m_drop_state ? DVP_FLAG_DROPPED : 0;
+    */
 
     bRet = true;
   }
@@ -461,7 +507,6 @@ bool CDVDVideoCodecCedar::ClearPicture(DVDVideoPicture* pDvdVideoPicture)
   if(pDvdVideoPicture->cedarPicture != NULL)
   {
     m_cedarDecoder->ReturnDisplayFrame(pDvdVideoPicture->cedarPicture->Picture);
-    delete pDvdVideoPicture->cedarPicture;
   }
   pDvdVideoPicture->cedarPicture = NULL;
 
@@ -470,19 +515,8 @@ bool CDVDVideoCodecCedar::ClearPicture(DVDVideoPicture* pDvdVideoPicture)
 
 void CDVDVideoCodecCedar::Reset(void)
 {
-  ClearPackages();
   if(m_cedarDecoder)
     m_cedarDecoder->Flush();
-}
-
-void CDVDVideoCodecCedar::ClearPackages()
-{
-  while(!m_cedarPackages.empty())
-  {
-    CCedarPackage *cedarPackage = m_cedarPackages.front();
-    m_cedarPackages.pop_front();
-    delete cedarPackage;
-  }
 }
 
 #endif

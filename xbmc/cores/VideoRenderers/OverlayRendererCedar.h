@@ -39,6 +39,7 @@
 #include "settings/GUISettings.h"
 #include "settings/Settings.h"
 
+#include "cores/dvdplayer/DVDCodecs/Video/CedarOverlayManager.h"
 #include "cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecCedar.h"
 
 class CRenderCapture;
@@ -83,7 +84,7 @@ struct YUVCOEF
 #define FIELD_ODD 1
 #define FIELD_EVEN 2
 
-#define NUM_BUFFERS 3
+#define NUM_BUFFERS 2
 
 extern YUVRANGE yuv_range_lim;
 extern YUVRANGE yuv_range_full;
@@ -148,7 +149,7 @@ class COverlayRendererCedar : public CBaseRenderer
       YV12Image image;
       unsigned  flipindex;
 
-      CCedarPicture *softPicture;
+      CedarPicture *softPicture;
     };
 
     YUVBUFFER     m_buffers[NUM_BUFFERS];

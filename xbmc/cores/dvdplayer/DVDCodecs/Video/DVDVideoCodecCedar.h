@@ -31,10 +31,10 @@
 
 #include "DVDVideoCodec.h"
 #include <libcedar/CedarDecoder.h>
-#include "CedarOverlayManager.h"
 #include "DllLibCedar.h"
 #include "threads/Thread.h"
 #include "threads/SingleLock.h"
+#include "DllAvFormat.h"
 
 #include <list>
 #include <vector>
@@ -42,62 +42,18 @@
 #include <deque>
 
 class CDVDVideoCodecCedar;
+class CBitstreamConverter;
 
-struct CCedarPackage
+typedef struct CedarPicture
 {
-public:
-  CCedarPackage(uint8_t *pData, int iSize, double dts_, double pts_, bool drop)
-  {
-    Data = NULL;
-    Size = 0;
-    DropState = drop;
-    if(pData && iSize)
-    {
-      Data = new uint8_t[iSize];
-      if(Data)
-      {
-        memcpy(Data, pData, iSize);
-        Size = iSize;
-        pts = pts_;
-        dts = dts_;
-      }
-    };
-  }
-  ~CCedarPackage()
-  {
-    delete Data;
-  };
-  bool    DropState;
-  uint8_t *Data;
-  int     Size;
-  double  dts;
-  double  pts;
-};
-
-struct CCedarPicture
-{
-public:
-  CCedarPicture(vpicture_t *pict, unsigned int yAddr_, unsigned int uAddr_, unsigned int vAddr_,
-      unsigned int ySize_, unsigned int uSize_, unsigned int vSize_) 
-  { 
-    Picture  = pict;
-    yAddr    = yAddr_;
-    uAddr    = uAddr_;
-    vAddr    = vAddr_;
-    ySize    = ySize_;
-    uSize    = uSize_;
-    vSize    = vSize_;
-  };
-  ~CCedarPicture() {};
   vpicture_t *Picture;
-  CCedarDecoder *Decoder;
   unsigned int yAddr;
   unsigned int uAddr;
   unsigned int vAddr;
   unsigned int ySize;
   unsigned int uSize;
   unsigned int vSize;
-};
+} CedarPicture;
 
 class CDVDVideoCodecCedar : public CDVDVideoCodec
 {
@@ -113,7 +69,6 @@ public:
   void SetDropState(bool bDrop);
   bool GetPicture(DVDVideoPicture *pDvdVideoPicture);
   bool ClearPicture(DVDVideoPicture* pDvdVideoPicture);
-  int  GetFrameCount() { return m_Frames; };
   const char* GetName() { return m_video_codec_name.c_str(); };
   void Process();
 protected:
@@ -121,33 +76,23 @@ protected:
   bool                            m_drop_state;
   unsigned int                    m_decoded_width;
   unsigned int                    m_decoded_height;
-  unsigned int                    m_picture_width;
-  unsigned int                    m_picture_height;
-  bool                            m_is_open;
-  bool                            m_Pause;
-  bool                            m_setStartTime;
-  uint8_t                         *m_extradata;
-  int                             m_extrasize;
   CStdString                      m_video_codec_name;
   bool                            m_valid_pts;
   uint64_t                        m_packet_count;
+  bool                            m_is_open;
 
   unsigned int m_input_size;
 
-  unsigned int                    m_Frames;
+  std::queue<double> m_dts_queue;
 
   CCedarDecoder                   *m_cedarDecoder;
+  CBitstreamConverter             *m_converter;
+  bool                            m_convert;
+  DllLibCedar                     m_dllCedar;
+  DVDVideoPicture                 m_videobuffer;
+  CedarPicture                    m_cedarPicture;
 
-  std::queue<double> m_dts_queue;
-  typedef std::list<CCedarPackage*>   PackageList;
-  PackageList                         m_cedarPackages;
-
-  void ClearPackages();
-
-  DllLibCedar                   m_dllCedar;
-  int                           m_lastDecodeTime;
-
-  DVDVideoPicture               m_videobuffer;
+  bool NaluFormatStartCodes(enum CodecID codec, uint8_t *in_extradata, int in_extrasize);
 };
 
 #endif

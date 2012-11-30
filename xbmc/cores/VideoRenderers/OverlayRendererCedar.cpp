@@ -89,10 +89,6 @@ void COverlayRendererCedar::WaitFrame(int64_t frameId)
     if(end > 30)
       break;
   }
-  end = XbmcThreads::SystemClockMillis() - start;
-
-  if(end > 30)
-    printf("flip time %3d\n", end);
 }
 
 void COverlayRendererCedar::ManageDisplay()
@@ -217,7 +213,7 @@ int COverlayRendererCedar::GetImage(YV12Image *image, int source, bool readonly)
 void COverlayRendererCedar::ReleaseImage(int source, bool preserve)
 {
   /*
-  CCedarPicture *cedarPicture = m_buffers[source].cedarPicture;
+  CedarPicture *cedarPicture = m_buffers[source].cedarPicture;
   if(cedarPicture)
   {
     m_buffers[source].cedarPicture = NULL;
@@ -231,17 +227,8 @@ void COverlayRendererCedar::FlipPage(int source)
     return;
 
   /*
-  CCedarPicture *cedarPicture = NULL;
-
+  CedarPicture *cedarPicture = NULL;
   cedarPicture = m_buffers[m_currentBuffer].softPicture;
-  if(cedarPicture && cedarPicture->Picture)
-  {
-    if(m_format != RENDER_FMT_YUV420P)
-    {
-      m_buffers[m_currentBuffer].softPicture = NULL;
-      cedarPicture->UnRef();
-    }
-  }
   */
 
   /* switch source */
@@ -251,18 +238,18 @@ void COverlayRendererCedar::FlipPage(int source)
     m_currentBuffer = NextYV12Image();
 
   /*
-  cedarPicture = m_buffers[m_currentBuffer].softPicture;
   if(cedarPicture && cedarPicture->Picture)
   {
     vpicture_t *picture = cedarPicture->Picture;
 
     __disp_pixel_fmt_t pixel_format = picture->pixel_format == PIXEL_FORMAT_AW_YUV422 ? DISP_FORMAT_YUV422 : DISP_FORMAT_YUV420;
 
-    g_graphicsContext.BeginPaint();
-    m_overlayCedar.RenderFrame(cedarPicture->Y, cedarPicture->U, cedarPicture->V, pixel_format, picture->frame_rate, cedarPicture->DisplayId);
-    //m_overlayCedar.WaitVSYNC();
-    ReleaseOldest(cedarPicture->DisplayId);
-    g_graphicsContext.EndPaint();
+    m_overlayCedar.RenderFrame(cedarPicture->yAddr, cedarPicture->uAddr, cedarPicture->vAddr,
+        cedarPicture->ySize, cedarPicture->uSize, cedarPicture->vSize,
+        pixel_format, picture->frame_rate, m_pictureCount);
+    m_overlayCedar.WaitVSYNC();
+    WaitFrame(m_pictureCount);
+    m_pictureCount++;
   }
   */
 }
@@ -294,7 +281,7 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
     {
       vpicture_t *softPicture = (vpicture_t*)malloc(sizeof(vpicture_t));
 
-      memset(softPicture, 0x0, sizeof(vpicture_t));
+      memset(softPicture, 0, sizeof(vpicture_t));
 
       /* setup framebuffer picture */
       softPicture->size_y = (pic.iWidth * pic.iHeight);
@@ -316,9 +303,16 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
 
       softPicture->id = m_pictureCount++; 
 
-      buf.softPicture = new CCedarPicture(softPicture, 
-          (unsigned int)softPicture->y, (unsigned int)softPicture->u, (unsigned int)softPicture->v,
-          (unsigned int)softPicture->size_y, (unsigned int)softPicture->size_u, (unsigned int)softPicture->size_v);
+      buf.softPicture = (CedarPicture*)malloc(sizeof(CedarPicture));
+      memset(buf.softPicture, 0, sizeof(CedarPicture));
+
+      buf.softPicture->Picture  = softPicture;
+      buf.softPicture->yAddr    = (unsigned int)softPicture->y;
+      buf.softPicture->uAddr    = (unsigned int)softPicture->u;
+      buf.softPicture->vAddr    = (unsigned int)softPicture->v;
+      buf.softPicture->ySize    = (unsigned int)softPicture->size_y;
+      buf.softPicture->uSize    = (unsigned int)softPicture->size_u;
+      buf.softPicture->vSize    = (unsigned int)softPicture->size_v;
     }
 
     /* copy to virtual adress */
@@ -374,40 +368,11 @@ void COverlayRendererCedar::AddProcessor(DVDVideoPicture &pic)
   }
   else
   {
-    /* allocate softpicture */
-    /*
-    if(!buf.softPicture && pic.cedarPicture)
-    {
-      vpicture_t *softPicture = (vpicture_t*)malloc(sizeof(vpicture_t));
-      vpicture_t *cedarPicture = pic.cedarPicture->Picture;
-
-      memcpy(softPicture, cedarPicture, sizeof(vpicture_t));
-      if(softPicture->size_y)
-        softPicture->y = (u8*)pic.cedarPicture->Decoder->MemPalloc(softPicture->size_y, 1024);
-      if(softPicture->size_u)
-        softPicture->u = (u8*)pic.cedarPicture->Decoder->MemPalloc(softPicture->size_u, 1024);
-      if(softPicture->size_v)
-        softPicture->v = (u8*)pic.cedarPicture->Decoder->MemPalloc(softPicture->size_v, 1024);
-
-      softPicture->id = m_pictureCount++; 
-
-      buf.softPicture = new CCedarPicture(softPicture, 
-          (unsigned int)softPicture->y, (unsigned int)softPicture->u, (unsigned int)softPicture->v, pic.cedarPicture->Decoder);
-    }
-
-    vpicture_t *softPicture = buf.softPicture->Picture;
-    if(softPicture && softPicture->y && softPicture->size_u)
-    {
-      fast_memcpy(softPicture->y, pic.cedarPicture->Picture->y, softPicture->size_y);
-      fast_memcpy(softPicture->u, pic.cedarPicture->Picture->u, softPicture->size_u);
-    }
-    */
-
     if(pic.cedarPicture)
       buf.softPicture = pic.cedarPicture;
   }
 
-  CCedarPicture *cedarPicture = buf.softPicture;
+  CedarPicture *cedarPicture = buf.softPicture;
   if(cedarPicture && cedarPicture->Picture)
   {
     vpicture_t *picture = cedarPicture->Picture;
@@ -427,9 +392,14 @@ void COverlayRendererCedar::RenderUpdate(bool clear, DWORD flags, DWORD alpha)
 {
   if (!m_bConfigured) return;
 
-  glEnable(GL_SCISSOR_TEST);
-  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  g_graphicsContext.BeginPaint();
+
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glClearColor(0, 0, 0, 0);
   glClear(GL_COLOR_BUFFER_BIT);
+
+  g_graphicsContext.EndPaint();
 }
 
 bool COverlayRendererCedar::RenderCapture(CRenderCapture* capture)
@@ -543,7 +513,7 @@ bool COverlayRendererCedar::FreeYV12Image(unsigned int index)
   {
     if(m_format == RENDER_FMT_YUV420P)
     {
-      CCedarPicture *softPicture = m_buffers[index].softPicture;
+      CedarPicture *softPicture = m_buffers[index].softPicture;
       if(softPicture->yAddr)
         m_cedarDecoder->MemPfree(softPicture->Picture->u);
       if(softPicture->uAddr)
@@ -552,8 +522,7 @@ bool COverlayRendererCedar::FreeYV12Image(unsigned int index)
         m_cedarDecoder->MemPfree(softPicture->Picture->v);
 
       free(softPicture->Picture);
-
-      delete softPicture;
+      free(softPicture);
     }
   }
   m_buffers[index].softPicture = NULL;
